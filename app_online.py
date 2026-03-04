@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 import io
 import re
 import dropbox
@@ -9,18 +8,20 @@ from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Alignment
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
-# 1. Conexión a Dropbox usando el secreto de Streamlit
+# --- 1. CONEXIÓN A DROPBOX ---
 try:
     dbx = dropbox.Dropbox(st.secrets["DROPBOX_TOKEN"])
-    DBX_PATH = "/App_Fuerza/Base_de_Datos_Fuerza.xlsx"
+    # LA RUTA EXACTA DE TU CARPETA COMPARTIDA:
+    DBX_PATH = "/Grupo Ejercicio Físico y Nutrición/App_Fuerza/Base_de_Datos_Fuerza.xlsx"
 except Exception as e:
     st.error("⚠️ Falta configurar el token de Dropbox en Streamlit Secrets.")
 
+# --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(page_title="NI-Force Cloud", layout="wide")
 st.title("☁️ Analizador de Fuerza NI - Conectado a Dropbox")
-st.info("Sube tus CSV. Los resultados se guardarán automáticamente en la base de datos central de Dropbox.")
+st.info("Sube tus CSV. Los resultados se guardarán automáticamente en la base de datos central compartida del grupo.")
 
-# Sidebar
+# --- SIDEBAR (DATOS Y AJUSTES) ---
 st.sidebar.header("📋 Datos del Lote")
 id_sujeto = st.sidebar.text_input("ID Sujeto (NIxx)", value="NI00", max_chars=4).strip().upper()
 es_id_valido = bool(re.match(r"^NI\d{2}$", id_sujeto))
@@ -66,7 +67,6 @@ csv_files = st.file_uploader("📊 Sube los archivos CSV", type="csv", accept_mu
 if csv_files:
     nuevas_reps = []
     
-    # Procesar todos los archivos subidos
     for idx, arc in enumerate(csv_files):
         try:
             serie_act = serie_inicial + idx
@@ -112,7 +112,7 @@ if csv_files:
         st.dataframe(df_nuevas.head(5))
 
         if es_id_valido and st.button("🚀 ENVIAR A DROPBOX CENTRAL"):
-            with st.spinner("Conectando con Dropbox..."):
+            with st.spinner("Conectando con la base de datos del grupo en Dropbox..."):
                 try:
                     # 1. Descargar el Excel actual de Dropbox
                     _, res = dbx.files_download(DBX_PATH)
@@ -132,4 +132,4 @@ if csv_files:
                     st.balloons()
                     
                 except Exception as e:
-                    st.error(f"❌ Error al conectar con Dropbox. Comprueba que la carpeta y el archivo existan. Detalle: {e}")
+                    st.error(f"❌ Error al conectar con Dropbox. Detalle: {e}")
