@@ -4,49 +4,52 @@ import numpy as np
 import matplotlib.pyplot as plt
 import io
 import re
-from openpyxl import Workbook, load_workbook
-from openpyxl.styles import PatternFill, Alignment, Font
+import dropbox
+from openpyxl import Workbook
+from openpyxl.styles import PatternFill, Alignment
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
-# 1. Configuración de la página
-st.set_page_config(page_title="NI-Force Database Manager", layout="wide")
-st.title("🔬 Procesador de Fuerza NI - Gestión de Historial Local")
-st.markdown("""
-Esta herramienta permite actualizar tu propia base de datos. 
-1. Sube tu archivo Excel actual (si ya tienes uno). 
-2. Sube los nuevos archivos CSV. 
-3. Descarga el archivo actualizado.
-""")
+# 1. Conexión a Dropbox usando el secreto de Streamlit
+try:
+    dbx = dropbox.Dropbox(st.secrets["DROPBOX_TOKEN"])
+    DBX_PATH = "/App_Fuerza/Base_de_Datos_Fuerza.xlsx"
+except Exception as e:
+    st.error("⚠️ Falta configurar el token de Dropbox en Streamlit Secrets.")
 
-# 2. Barra lateral
-st.sidebar.header("📋 Datos del Sujeto")
+st.set_page_config(page_title="NI-Force Cloud", layout="wide")
+st.title("☁️ Analizador de Fuerza NI - Conectado a Dropbox")
+st.info("Sube tus CSV. Los resultados se guardarán automáticamente en la base de datos central de Dropbox.")
+
+# Sidebar
+st.sidebar.header("📋 Datos del Lote")
 id_sujeto = st.sidebar.text_input("ID Sujeto (NIxx)", value="NI00", max_chars=4).strip().upper()
 es_id_valido = bool(re.match(r"^NI\d{2}$", id_sujeto))
+
+if not es_id_valido:
+    st.sidebar.error("❌ Formato requerido: NI00")
+else:
+    st.sidebar.success(f"✅ ID Correcto")
 
 nombre_sesion = st.sidebar.text_input("Sesión", "Sesión_A").strip()
 serie_inicial = st.sidebar.number_input("Empezar en Serie nº", min_value=1, value=1)
 
-st.sidebar.header("⚙️ Ajustes de Análisis")
+st.sidebar.header("⚙️ Ajustes")
 sens_inicio = st.sidebar.slider("Inicio (N/s)", 10, 2000, 40)
 sens_final_pendiente = st.sidebar.slider("Final (Sensibilidad)", -1000, -5, -10)
 recorte = st.sidebar.slider("Recorte (s)", 1.0, 10.0, 5.0)
 umbral_corte = st.sidebar.number_input("Valor X final (N)", value=25.0)
 
-# Colores pastel para distinguir sujetos
 COLORES_PASTEL = ["FFEBEE", "E3F2FD", "F1F8E9", "FFF3E0", "F3E5F5", "E0F7FA", "FFFDE7", "F9FBE7", "E8EAF6", "EFEBE9"]
 
 def estilizar_excel(df, output):
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='Resultados')
         ws = writer.sheets['Resultados']
-        
-        # Tabla inteligente
         ref = f"A1:{chr(64 + len(df.columns))}{len(df) + 1}"
         tab = Table(displayName="DB_Fuerza", ref=ref)
         tab.tableStyleInfo = TableStyleInfo(name="TableStyleMedium2", showRowStripes=True)
         ws.add_table(tab)
         
-        # Colores por ID
         ids = df['Sujeto'].unique().tolist()
         mapa = {id: COLORES_PASTEL[i % len(COLORES_PASTEL)] for i, id in enumerate(ids)}
         for row in range(2, ws.max_row + 1):
@@ -55,24 +58,15 @@ def estilizar_excel(df, output):
             for col in range(1, len(df.columns) + 1):
                 ws.cell(row=row, column=col).fill = fill
                 ws.cell(row=row, column=col).alignment = Alignment(horizontal="center")
-        for col in ws.columns: ws.column_dimensions[col[0].column_letter].width = 16
     return output
 
-# --- INTERFAZ DE CARGA ---
-col_db, col_csv = st.columns(2)
-
-with col_db:
-    st.subheader("1. Tu Base de Datos (.xlsx)")
-    excel_file = st.file_uploader("Opcional: Sube tu Excel actual para añadir datos", type="xlsx")
-
-with col_csv:
-    st.subheader("2. Nuevos Archivos (.csv)")
-    csv_files = st.file_uploader("Sube los archivos CSV de hoy", type="csv", accept_multiple_files=True)
+# --- PROCESAMIENTO ---
+csv_files = st.file_uploader("📊 Sube los archivos CSV", type="csv", accept_multiple_files=True)
 
 if csv_files:
     nuevas_reps = []
-    st.divider()
     
+    # Procesar todos los archivos subidos
     for idx, arc in enumerate(csv_files):
         try:
             serie_act = serie_inicial + idx
@@ -82,9 +76,7 @@ if csv_files:
             mask = ~np.isnan(t) & ~np.isnan(f)
             t, f = t[mask], f[mask]
             
-            # Pendiente para detección de RFD: $$\text{Pendiente} = \frac{\Delta F}{\Delta t}$$
             pend = np.gradient(f) / np.gradient(t)
-            
             inicios, en_accion = [], False
             for i in range(1, len(pend)):
                 if pend[i] > sens_inicio and not en_accion:
@@ -112,31 +104,32 @@ if csv_files:
                             'Media(N)': round(np.mean(f[m_m]), 2),
                             'Max(N)': round(np.max(f[m_m]), 2)
                         })
-        except Exception as e:
-            st.error(f"Error en {arc.name}: {e}")
+        except Exception: pass
 
     if nuevas_reps:
         df_nuevas = pd.DataFrame(nuevas_reps)
-        
-        # Lógica de Fusión
-        if excel_file:
-            df_historial = pd.read_excel(excel_file)
-            df_final = pd.concat([df_historial, df_nuevas], ignore_index=True)
-            st.success(f"Se han añadido {len(df_nuevas)} repeticiones al historial cargado.")
-        else:
-            df_final = df_nuevas
-            st.info("Creando un nuevo historial con estas repeticiones.")
+        st.write("### 📋 Vista previa de los nuevos datos:")
+        st.dataframe(df_nuevas.head(5))
 
-        st.dataframe(df_final.tail(10), use_container_width=True) # Ver las últimas 10
-
-        # Botón de Descarga
-        buffer = io.BytesIO()
-        estilizar_excel(df_final, buffer)
-        
-        st.download_button(
-            label="💾 DESCARGAR BASE DE DATOS ACTUALIZADA",
-            data=buffer.getvalue(),
-            file_name=f"DB_Fuerza_{id_sujeto}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
-        )
+        if es_id_valido and st.button("🚀 ENVIAR A DROPBOX CENTRAL"):
+            with st.spinner("Conectando con Dropbox..."):
+                try:
+                    # 1. Descargar el Excel actual de Dropbox
+                    _, res = dbx.files_download(DBX_PATH)
+                    df_historial = pd.read_excel(io.BytesIO(res.content))
+                    
+                    # 2. Unir datos viejos con nuevos
+                    df_final = pd.concat([df_historial, df_nuevas], ignore_index=True)
+                    
+                    # 3. Darle estilo y prepararlo en memoria
+                    buffer = io.BytesIO()
+                    estilizar_excel(df_final, buffer)
+                    
+                    # 4. Volver a subirlo, sobreescribiendo el viejo
+                    dbx.files_upload(buffer.getvalue(), DBX_PATH, mode=dropbox.files.WriteMode.overwrite)
+                    
+                    st.success("✅ ¡Datos guardados exitosamente en Dropbox!")
+                    st.balloons()
+                    
+                except Exception as e:
+                    st.error(f"❌ Error al conectar con Dropbox. Comprueba que la carpeta y el archivo existan. Detalle: {e}")
